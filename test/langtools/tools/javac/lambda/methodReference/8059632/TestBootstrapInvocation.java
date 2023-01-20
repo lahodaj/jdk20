@@ -143,22 +143,38 @@ public class TestBootstrapInvocation {
                     static interface I { public default void iMethod() {} }
                     static class B { public void bMethod() {} }
                     static class C extends B implements I, Serializable { }
+                    static interface I2 { public void iaMethod(); }
+                    static abstract class C2 implements I2 { }
+                    static class D2 extends C2 implements Serializable { public void iaMethod() {} }
+                    static abstract class B3 { public abstract void aMethod(); }
+                    static abstract class C3 extends B3 { }
+                    static class D3 extends C3 implements Serializable { public void aMethod() {} }
                     public static void main(String... args) throws Exception {
-                        C v = new C();
-                        Runnable r1 = (Serializable & Runnable) v::iMethod;
-                        Runnable r2 = (Serializable & Runnable) v::bMethod;
+                        C v1 = new C();
+                        C2 v2 = new D2();
+                        C3 v3 = new D3();
+                        Runnable r1 = (Serializable & Runnable) v1::iMethod;
+                        Runnable r2 = (Serializable & Runnable) v1::bMethod;
+                        Runnable r3 = (Serializable & Runnable) v2::iaMethod;
+                        Runnable r4 = (Serializable & Runnable) v3::aMethod;
                         try (ByteArrayOutputStream os = new ByteArrayOutputStream();
                              ObjectOutputStream oos = new ObjectOutputStream(os)) {
                             oos.writeObject(r1);
                             oos.writeObject(r2);
+                            oos.writeObject(r3);
+                            oos.writeObject(r4);
                             try (InputStream is = new ByteArrayInputStream(os.toByteArray());
                                  ObjectInputStream ois = new ObjectInputStream(is)) {
                                 r1 = (Runnable) ois.readObject();
                                 r2 = (Runnable) ois.readObject();
+                                r3 = (Runnable) ois.readObject();
+                                r4 = (Runnable) ois.readObject();
                             }
                         }
                         r1.run();
                         r2.run();
+                        r3.run();
+                        r4.run();
                     }
                 }
                 """;
@@ -195,7 +211,7 @@ public class TestBootstrapInvocation {
                     (BootstrapMethods_attribute)cf
                             .getAttribute(Attribute.BootstrapMethods);
             int length = bsm_attr.bootstrap_method_specifiers.length;
-            if (length != 2) {
+            if (length != 4) {
                 throw new Error("Bad number of method specifiers " +
                         "in BootstrapMethods attribute: " + length);
             }
@@ -211,12 +227,12 @@ public class TestBootstrapInvocation {
                 if (mh.reference_kind != RefKind.REF_invokeVirtual) {
                     throw new Error("Bad invoke kind in implementation method handle: " + mh.reference_kind);
                 }
-                if (!mh.getCPRefInfo().getClassName().equals("Test$C")) {
+                if (!mh.getCPRefInfo().getClassName().startsWith("Test$C")) {
                     throw new Error("Unexpected class name: " + mh.getCPRefInfo().getClassName());
                 }
                 seenMethodNames.add(mh.getCPRefInfo().getNameAndTypeInfo().getName());
             }
-            Set<String> expectedMethodNames = Set.of("iMethod", "bMethod");
+            Set<String> expectedMethodNames = Set.of("iMethod", "bMethod", "iaMethod", "aMethod");
             if (!expectedMethodNames.equals(seenMethodNames)) {
                 throw new Error("Unexpected methods referenced in method handle in bootstrap section: " +
                                      seenMethodNames);
