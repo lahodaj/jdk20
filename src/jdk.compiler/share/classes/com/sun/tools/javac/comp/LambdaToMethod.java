@@ -443,7 +443,7 @@ public class LambdaToMethod extends TreeTranslator {
         List<JCExpression> indy_args = translate(syntheticInits.toList(), localContext.prev);
 
         //convert to an invokedynamic call
-        result = makeMetafactoryIndyCall(context, sym.asHandle(), indy_args);
+        result = makeMetafactoryIndyCall(context, sym.asHandle(), sym.asHandle(), indy_args);
     }
 
     // where
@@ -518,6 +518,8 @@ public class LambdaToMethod extends TreeTranslator {
                 throw new InternalError("Should not have an invalid kind");
         }
 
+        MethodSymbol origRefSym = refSym;
+
         if (init != null) {
             refSym = (MethodSymbol) types.binaryQualifier(refSym, init.type);
         }
@@ -525,7 +527,7 @@ public class LambdaToMethod extends TreeTranslator {
 
 
         //build a sam instance using an indy call to the meta-factory
-        result = makeMetafactoryIndyCall(localContext, refSym.asHandle(), indy_args);
+        result = makeMetafactoryIndyCall(localContext, refSym.asHandle(), origRefSym.asHandle(), indy_args);
     }
 
     /**
@@ -727,7 +729,7 @@ public class LambdaToMethod extends TreeTranslator {
                         null);
         deser.sym = kInfo.deserMethodSym;
         deser.type = kInfo.deserMethodSym.type;
-        //System.err.printf("DESER: '%s'\n", deser);
+        System.err.printf("DESER: '%s'\n", deser);
         return deser;
     }
 
@@ -753,7 +755,8 @@ public class LambdaToMethod extends TreeTranslator {
                 rs.resolveConstructor(null, attrEnv, ctype, TreeInfo.types(args), List.nil()));
      }
 
-    private void addDeserializationCase(MethodHandleSymbol refSym, Type targetType, MethodSymbol samSym,
+    private void addDeserializationCase(MethodHandleSymbol refSym, MethodHandleSymbol origRefSym,
+                                        Type targetType, MethodSymbol samSym,
                                         DiagnosticPosition pos, List<LoadableConstant> staticArgs, MethodType indyType) {
         String functionalInterfaceClass = classSig(targetType);
         String functionalInterfaceMethodName = samSym.getSimpleName().toString();
@@ -767,6 +770,7 @@ public class LambdaToMethod extends TreeTranslator {
             refSym = ((MethodSymbol) origMethod).asHandle();
         }
         String implClass = classSig(types.erasure(refSym.owner.type));
+        String origImplClass = classSig(types.erasure(origRefSym.owner.type));
         String implMethodName = refSym.getQualifiedName().toString();
         String implMethodSignature = typeSig(types.erasure(refSym.type));
 
@@ -786,7 +790,7 @@ public class LambdaToMethod extends TreeTranslator {
                     "getFunctionalInterfaceClass", functionalInterfaceClass),
                     "getFunctionalInterfaceMethodName", functionalInterfaceMethodName),
                     "getFunctionalInterfaceMethodSignature", functionalInterfaceMethodSignature),
-                    "getImplClass", implClass),
+                    "getImplClass", implClass, origImplClass),
                     "getImplMethodSignature", implMethodSignature),
                 make.Return(makeIndyCall(
                     pos,
@@ -819,7 +823,7 @@ public class LambdaToMethod extends TreeTranslator {
         return testExpr;
     }
 
-    private JCExpression deserTest(JCExpression prev, String func, String lit) {
+    private JCExpression deserTestSimple(String func, String lit) {
         MethodType eqmt = new MethodType(List.of(syms.objectType), syms.booleanType, List.nil(), syms.methodClass);
         Symbol eqsym = rs.resolveQualifiedMethod(null, attrEnv, syms.objectType, names.equals, List.of(syms.objectType), List.nil());
         JCMethodInvocation eqtest = make.Apply(
@@ -827,9 +831,29 @@ public class LambdaToMethod extends TreeTranslator {
                 make.Select(deserGetter(func, syms.stringType), eqsym).setType(eqmt),
                 List.of(make.Literal(lit)));
         eqtest.setType(syms.booleanType);
-        JCBinary compound = make.Binary(JCTree.Tag.AND, prev, eqtest);
-        compound.operator = operators.resolveBinary(compound, JCTree.Tag.AND, syms.booleanType, syms.booleanType);
+        return eqtest;
+    }
+
+    private JCExpression deserTest(JCExpression prev, String func, String lit) {
+        JCExpression eqtest = deserTestSimple(func, lit);
+        return makeBinary(AND, prev, eqtest);
+    }
+
+    private JCExpression deserTest(JCExpression prev, String func, String lit1, String lit2) {
+        JCExpression eqtest;
+        if (lit1.equals(lit2)) {
+            eqtest = deserTestSimple(func, lit1);
+        } else {
+            eqtest = makeBinary(OR, deserTestSimple(func, lit1), deserTestSimple(func, lit2));
+        }
+        return makeBinary(AND, prev, eqtest);
+    }
+
+    private JCExpression makeBinary(JCTree.Tag op, JCExpression left, JCExpression right) {
+        JCBinary compound = make.Binary(op, left, right);
+        compound.operator = operators.resolveBinary(compound, op, syms.booleanType, syms.booleanType);
         compound.setType(syms.booleanType);
+
         return compound;
     }
 
@@ -1111,7 +1135,7 @@ public class LambdaToMethod extends TreeTranslator {
      * Generate an indy method call to the meta factory
      */
     private JCExpression makeMetafactoryIndyCall(TranslationContext<?> context,
-            MethodHandleSymbol refSym, List<JCExpression> indy_args) {
+            MethodHandleSymbol refSym, MethodHandleSymbol origRefSym, List<JCExpression> indy_args) {
         JCFunctionalExpression tree = context.tree;
         //determine the static bsm args
         MethodSymbol samSym = (MethodSymbol) types.findDescriptorSymbol(tree.target.tsym);
@@ -1175,7 +1199,7 @@ public class LambdaToMethod extends TreeTranslator {
                 int prevPos = make.pos;
                 try {
                     make.at(kInfo.clazz);
-                    addDeserializationCase(refSym, tree.type, samSym,
+                    addDeserializationCase(refSym, origRefSym, tree.type, samSym,
                             tree, staticArgs, indyType);
                 } finally {
                     make.at(prevPos);
